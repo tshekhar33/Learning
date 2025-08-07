@@ -1,0 +1,137 @@
+//@version=5
+strategy("15 EMA Touch Strategy (3-Min)", overlay=true, shorttitle="15 EMA Touch")
+
+// Inputs
+emaLength = input.int(15, title="EMA Length")
+proximityPercent = input.float(0.05, title="Proximity to EMA %") / 100
+pipSize = input.float(0.0001, title="Pip Size")
+takeProfitPips = input.float(20.0, title="Take Profit (Pips)")
+stopLossPips = input.float(15.0, title="Stop Loss (Pips)")
+
+// -- Calculations --
+// Calculate the 15 EMA
+emaValue = ta.ema(close, emaLength)
+
+// Determine proximity to the EMA
+priceProximity = math.abs(close - emaValue) / emaValue <= proximityPercent
+
+// -- Candlestick Patterns --
+// Bullish Engulfing
+bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+
+// Hammer (checking for a small body and a long lower wick)
+isHammer() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(open, close) - low
+    upperWick = high - math.max(open, close)
+    bodySize > 0 and lowerWick > 2 * bodySize and upperWick < bodySize
+
+// Bearish Engulfing
+bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+
+// Shooting Star (checking for a small body and a long upper wick)
+isShootingStar() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(open, close) - low
+    upperWick = high - math.max(open, close)
+    bodySize > 0 and upperWick > 2 * bodySize and lowerWick < bodySize
+
+// -- Entry Conditions --
+longCondition = priceProximity and (bullishEngulfing or isHammer())
+shortCondition = priceProximity and (bearishEngulfing or isShootingStar())
+
+// Generate a unique trade ID for each new trade
+var tradeCounter = 0
+if (longCondition or shortCondition)
+    tradeCounter += 1
+
+// -- Strategy Execution --
+// Long Entry
+if (longCondition)
+    strategy.entry("Long_" + str.tostring(tradeCounter), strategy.long)
+    stopLossPrice = close - (stopLossPips * pipSize)
+    strategy.exit("TP/SL_Long_" + str.tostring(tradeCounter), "Long_" + str.tostring(tradeCounter), 
+                 profit = takeProfitPips / pipSize, 
+                 stop = stopLossPrice)
+
+// Short Entry
+if (shortCondition)
+    strategy.entry("Short_" + str.tostring(tradeCounter), strategy.short)
+    stopLossPrice = close + (stopLossPips * pipSize)
+    strategy.exit("TP/SL_Short_" + str.tostring(tradeCounter), "Short_" + str.tostring(tradeCounter), 
+                 profit = takeProfitPips / pipSize, 
+                 stop = stopLossPrice)
+
+// Alternative: Close positions when price crosses EMA (optional, can be enabled)
+// if (strategy.position_size > 0 and ta.crossunder(close, emaValue))
+//     strategy.close("Long_" + str.tostring(tradeCounter), comment = "EMA Cross Exit")
+// if (strategy.position_size < 0 and ta.crossover(close, emaValue))
+//     strategy.close("Short_" + str.tostring(tradeCounter), comment = "EMA Cross Exit")
+
+// -- Plotting --
+// Plot the 15 EMA
+plot(emaValue, "15 EMA", color=color.blue, linewidth=2)
+
+// Mark entry points with arrows
+plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Long Entry")
+plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
+
+// --- Track and Plot Trade Lines ---
+// Use a more reliable method for tracking trades
+var line[] tradeLines = array.new<line>()
+var label[] tradeLabels = array.new<label>()
+
+// Store entry information when trades are opened
+var float entryPrice = na
+var int entryBar = na
+var string currentTradeId = na
+
+if (longCondition)
+    entryPrice := close
+    entryBar := bar_index
+    currentTradeId := "Long_" + str.tostring(tradeCounter)
+
+if (shortCondition)
+    entryPrice := close
+    entryBar := bar_index
+    currentTradeId := "Short_" + str.tostring(tradeCounter)
+
+// Check for trade exits and draw lines
+if (strategy.position_size == 0 and strategy.position_size[1] != 0)
+    // A position was just closed
+    if (not na(entryPrice) and not na(entryBar))
+        // Create line from entry to exit
+        tradeLine = line.new(entryBar, entryPrice, bar_index, close, 
+                           color=color.new(color.gray, 50), width=1, style=line.style_dashed)
+        array.push(tradeLines, tradeLine)
+        
+        // Add exit label
+        isProfit = (strategy.position_size[1] > 0 and close > entryPrice) or (strategy.position_size[1] < 0 and close < entryPrice)
+        labelColor = isProfit ? color.green : color.red
+        exitLabel = label.new(bar_index, close, 
+                            text="Exit: " + (isProfit ? "Profit" : "Loss"), 
+                            color=color.new(labelColor, 80), 
+                            textcolor=color.white, 
+                            style=label.style_label_down, 
+                            size=size.small)
+        array.push(tradeLabels, exitLabel)
+        
+        // Reset tracking variables
+        entryPrice := na
+        entryBar := na
+        currentTradeId := na
+
+// Clean up old lines and labels (keep only last 50)
+if (array.size(tradeLines) > 50)
+    line.delete(array.shift(tradeLines))
+if (array.size(tradeLabels) > 50)
+    label.delete(array.shift(tradeLabels))
+
+// Plot proximity zones
+upperProximity = emaValue * (1 + proximityPercent)
+lowerProximity = emaValue * (1 - proximityPercent)
+plot(upperProximity, "Upper Proximity", color=color.new(color.blue, 80), linewidth=1)
+plot(lowerProximity, "Lower Proximity", color=color.new(color.blue, 80), linewidth=1)
+
+// Fill the proximity zone
+fill(plot(upperProximity), plot(lowerProximity), color=color.new(color.blue, 95), title="EMA Proximity Zone")
