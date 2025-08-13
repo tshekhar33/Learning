@@ -1,0 +1,107 @@
+//@version=5
+strategy("15 EMA Touch Strategy (3-Min)", overlay = true, shorttitle = "15 EMA Touch")
+
+// ───────────────── Inputs ─────────────────────────────
+emaLength       = input.int(15     , "EMA Length")
+proxPercent     = input.float(0.05 , "Proximity to EMA (%)") / 100     // 5 %
+pipSize         = input.float(0.0001, "Pip Size")
+takeProfitPips  = input.float(20.0 , "Take Profit (Pips)")
+
+// ───────────────── Core Calculations ───────────────────
+emaValue    = ta.ema(close, emaLength)
+priceNear   = math.abs(close - emaValue) / emaValue <= proxPercent
+
+// ───────────────── Candle Patterns ─────────────────────
+// Bullish & bearish engulfing
+bullEngulf  = close > open  and close[1] < open[1] and close > open[1] and open < close[1]
+bearEngulf  = close < open  and close[1] > open[1] and close < open[1] and open > close[1]
+
+// Hammer pattern detection
+isHammer() =>
+    body  = math.abs(close - open)
+    lWick = math.min(open, close) - low
+    uWick = high - math.max(open, close)
+    body > 0 and lWick > 2 * body and uWick < body
+
+// Shooting-star pattern detection
+isSStar() =>
+    body  = math.abs(close - open)
+    lWick = math.min(open, close) - low
+    uWick = high - math.max(open, close)
+    body > 0 and uWick > 2 * body and lWick < body
+
+// ───────────────── Entry Logic ─────────────────────────
+longCond  = priceNear and (bullEngulf or isHammer())
+shortCond = priceNear and (bearEngulf or isSStar())
+
+// Unique trade IDs
+var int tradeCounter = 0
+if longCond or shortCond
+    tradeCounter += 1
+
+// ───────────────── Orders ──────────────────────────────
+if longCond
+    id = "Long_" + str.tostring(tradeCounter)
+    strategy.entry(id, strategy.long)
+    strategy.exit("Exit_" + id, from_entry = id,
+         profit = takeProfitPips / pipSize,
+         stop   = ta.crossunder(close, emaValue) ? close : na)
+
+if shortCond
+    id = "Short_" + str.tostring(tradeCounter)
+    strategy.entry(id, strategy.short)
+    strategy.exit("Exit_" + id, from_entry = id,
+         profit = takeProfitPips / pipSize,
+         stop   = ta.crossover(close, emaValue) ? close : na)
+
+// ───────────────── Plots ───────────────────────────────
+plot(emaValue, "15 EMA", color = color.blue)
+plotshape(longCond , style = shape.triangleup  , location = location.belowbar,
+          color = color.green, title = "Long Entry" , size = size.small)
+plotshape(shortCond, style = shape.triangledown, location = location.abovebar,
+          color = color.red  , title = "Short Entry", size = size.small)
+
+// ───────────────── Trade Tracking ──────────────────────
+// Map to store entry information for each trade.
+var map<string, array<float>> entryMap = map.new<string, array<float>>()
+
+// Helper to create an array with entry bar & price without `array.from()` (v6 feature)
+createEntryArray(_barIndex, _price) =>
+    a = array.new_float(0)
+    array.push(a, float(_barIndex))
+    array.push(a, _price)
+    a
+
+// Store entry info whenever a new trade is opened.
+if longCond
+    entryMap.put("Long_"  + str.tostring(tradeCounter), createEntryArray(bar_index, close))
+if shortCond
+    entryMap.put("Short_" + str.tostring(tradeCounter), createEntryArray(bar_index, close))
+
+// We keep track of how many closed trades we've already processed so we only act on new ones.
+var int closedSeen = 0
+var line tradeLine = na
+
+if strategy.closedtrades > closedSeen
+    idx     = strategy.closedtrades - 1               // index of the most-recently closed trade
+    tId     = strategy.closedtrades.entry_id(idx)
+
+    if map.has(entryMap, tId)
+        aEntry      = map.get(entryMap, tId)
+        entryBar    = int(array.get(aEntry, 0))
+        entryPrice  =       array.get(aEntry, 1)
+        exitBar     = strategy.closedtrades.exit_bar_index(idx)
+        exitPrice   = strategy.closedtrades.exit_price(idx)
+
+        tradeLine := line.new(entryBar, entryPrice, exitBar, exitPrice,
+                              color = color.new(color.gray, 40), width = 1)
+        label.new(exitBar, exitPrice,
+                  text = "Exit #" + str.split(tId, "_")[1],
+                  style = label.style_label_down,
+                  color = color.black,
+                  textcolor = color.white)
+
+        map.remove(entryMap, tId)
+
+    // Update the counter so we don't re-process the same trade.
+    closedSeen := strategy.closedtrades
