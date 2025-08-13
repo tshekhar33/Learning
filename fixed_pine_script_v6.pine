@@ -1,0 +1,185 @@
+//@version=6
+strategy("15 EMA Touch Strategy (3-Min)", overlay=true, shorttitle="15 EMA Touch")
+
+// Inputs
+emaLength = input.int(15, title="EMA Length")
+proximityPercent = input.float(0.05, title="Proximity to EMA %") / 100
+pipSize = input.float(0.0001, title="Pip Size")
+takeProfitPips = input.float(20.0, title="Take Profit (Pips)")
+stopLossPips = input.float(15.0, title="Stop Loss (Pips)")
+
+// -- Calculations --
+// Calculate the 15 EMA
+emaValue = ta.ema(close, emaLength)
+
+// Determine proximity to the EMA
+priceProximity = math.abs(close - emaValue) / emaValue <= proximityPercent
+
+// -- Candlestick Patterns --
+// Bullish Engulfing
+bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+
+// Hammer (checking for a small body and a long lower wick)
+isHammer() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(open, close) - low
+    upperWick = high - math.max(open, close)
+    bodySize > 0 and lowerWick > 2 * bodySize and upperWick < bodySize
+
+// Bearish Engulfing
+bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+
+// Shooting Star (checking for a small body and a long upper wick)
+isShootingStar() =>
+    bodySize = math.abs(close - open)
+    lowerWick = math.min(open, close) - low
+    upperWick = high - math.max(open, close)
+    bodySize > 0 and upperWick > 2 * bodySize and lowerWick < bodySize
+
+// -- Entry Conditions --
+longCondition = priceProximity and (bullishEngulfing or isHammer())
+shortCondition = priceProximity and (bearishEngulfing or isShootingStar())
+
+// Generate a unique trade ID for each new trade
+var tradeCounter = 0
+if (longCondition or shortCondition)
+    tradeCounter += 1
+
+// -- Strategy Execution --
+// Long Entry
+if (longCondition)
+    strategy.entry("Long_" + str.tostring(tradeCounter), strategy.long)
+    stopLossPrice = close - (stopLossPips * pipSize)
+    strategy.exit("TP/SL_Long_" + str.tostring(tradeCounter), "Long_" + str.tostring(tradeCounter), 
+                 profit = takeProfitPips / pipSize, 
+                 stop = stopLossPrice)
+
+// Short Entry
+if (shortCondition)
+    strategy.entry("Short_" + str.tostring(tradeCounter), strategy.short)
+    stopLossPrice = close + (stopLossPips * pipSize)
+    strategy.exit("TP/SL_Short_" + str.tostring(tradeCounter), "Short_" + str.tostring(tradeCounter), 
+                 profit = takeProfitPips / pipSize, 
+                 stop = stopLossPrice)
+
+// Alternative: Close positions when price crosses EMA (optional, can be enabled)
+// if (strategy.position_size > 0 and ta.crossunder(close, emaValue))
+//     strategy.close("Long_" + str.tostring(tradeCounter), comment = "EMA Cross Exit")
+// if (strategy.position_size < 0 and ta.crossover(close, emaValue))
+//     strategy.close("Short_" + str.tostring(tradeCounter), comment = "EMA Cross Exit")
+
+// -- Plotting --
+// Plot the 15 EMA
+plot(emaValue, "15 EMA", color=color.blue, linewidth=2)
+
+// Mark entry points with arrows
+plotshape(longCondition, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Long Entry")
+plotshape(shortCondition, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Entry")
+
+// --- Track and Plot Trade Lines ---
+// Use arrays for tracking trades (Pine Script v6 syntax)
+var array<line> tradeLines = array.new<line>()
+var array<label> tradeLabels = array.new<label>()
+
+// Store entry information when trades are opened
+var float entryPrice = na
+var int entryBar = na
+var string currentTradeId = na
+
+if (longCondition)
+    entryPrice := close
+    entryBar := bar_index
+    currentTradeId := "Long_" + str.tostring(tradeCounter)
+
+if (shortCondition)
+    entryPrice := close
+    entryBar := bar_index
+    currentTradeId := "Short_" + str.tostring(tradeCounter)
+
+// Check for trade exits and draw lines
+if (strategy.position_size == 0 and strategy.position_size[1] != 0)
+    // A position was just closed
+    if (not na(entryPrice) and not na(entryBar))
+        // Create line from entry to exit
+        tradeLine = line.new(entryBar, entryPrice, bar_index, close, 
+                           color=color.new(color.gray, 50), width=1, style=line.style_dashed)
+        array.push(tradeLines, tradeLine)
+        
+        // Add exit label
+        isProfit = (strategy.position_size[1] > 0 and close > entryPrice) or (strategy.position_size[1] < 0 and close < entryPrice)
+        labelColor = isProfit ? color.green : color.red
+        exitLabel = label.new(bar_index, close, 
+                            text="Exit: " + (isProfit ? "Profit" : "Loss"), 
+                            color=color.new(labelColor, 80), 
+                            textcolor=color.white, 
+                            style=label.style_label_down, 
+                            size=size.small)
+        array.push(tradeLabels, exitLabel)
+        
+        // Reset tracking variables
+        entryPrice := na
+        entryBar := na
+        currentTradeId := na
+
+// Clean up old lines and labels (keep only last 50)
+if (array.size(tradeLines) > 50)
+    line.delete(array.shift(tradeLines))
+if (array.size(tradeLabels) > 50)
+    label.delete(array.shift(tradeLabels))
+
+// Plot proximity zones
+upperProximity = emaValue * (1 + proximityPercent)
+lowerProximity = emaValue * (1 - proximityPercent)
+upperPlot = plot(upperProximity, "Upper Proximity", color=color.new(color.blue, 80), linewidth=1)
+lowerPlot = plot(lowerProximity, "Lower Proximity", color=color.new(color.blue, 80), linewidth=1)
+
+// Fill the proximity zone
+fill(upperPlot, lowerPlot, color=color.new(color.blue, 95), title="EMA Proximity Zone")
+
+// -- Enhanced Information Display --
+// Display current strategy statistics in a table (Pine Script v6 feature)
+if barstate.islast
+    var table infoTable = table.new(position.top_right, 2, 6, bgcolor=color.new(color.white, 80), border_width=1)
+    
+    table.cell(infoTable, 0, 0, "Total Trades", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 0, str.tostring(strategy.closedtrades), text_color=color.black, text_size=size.small)
+    
+    table.cell(infoTable, 0, 1, "Win Rate", text_color=color.black, text_size=size.small)
+    winRate = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+    table.cell(infoTable, 1, 1, str.tostring(winRate, "#.##") + "%", text_color=color.black, text_size=size.small)
+    
+    table.cell(infoTable, 0, 2, "Profit Factor", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(strategy.grossprofit / math.max(strategy.grossloss, 1), "#.##"), text_color=color.black, text_size=size.small)
+    
+    table.cell(infoTable, 0, 3, "Net Profit", text_color=color.black, text_size=size.small)
+    netProfitColor = strategy.netprofit > 0 ? color.green : color.red
+    table.cell(infoTable, 1, 3, str.tostring(strategy.netprofit, "#.##"), text_color=netProfitColor, text_size=size.small)
+    
+    table.cell(infoTable, 0, 4, "Max Drawdown", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 4, str.tostring(strategy.max_drawdown, "#.##"), text_color=color.red, text_size=size.small)
+    
+    table.cell(infoTable, 0, 5, "EMA Value", text_color=color.black, text_size=size.small)
+    table.cell(infoTable, 1, 5, str.tostring(emaValue, "#.####"), text_color=color.blue, text_size=size.small)
+
+// -- Alerts (Pine Script v6 enhanced alerts) --
+// Alert conditions for automated trading
+alertcondition(longCondition, title="Long Entry Signal", message="15 EMA Touch Strategy: Long Entry Signal - {{ticker}} at {{close}}")
+alertcondition(shortCondition, title="Short Entry Signal", message="15 EMA Touch Strategy: Short Entry Signal - {{ticker}} at {{close}}")
+
+// Position exit alerts
+longExit = strategy.position_size[1] > 0 and strategy.position_size == 0
+shortExit = strategy.position_size[1] < 0 and strategy.position_size == 0
+
+alertcondition(longExit, title="Long Exit Signal", message="15 EMA Touch Strategy: Long Position Closed - {{ticker}} at {{close}}")
+alertcondition(shortExit, title="Short Exit Signal", message="15 EMA Touch Strategy: Short Position Closed - {{ticker}} at {{close}}")
+
+// -- Background Color for Market Sessions (Pine Script v6 feature) --
+// Highlight trading sessions
+isNYSession = time(timeframe.period, "0930-1600:1234567", "America/New_York")
+isLondonSession = time(timeframe.period, "0800-1700:1234567", "Europe/London")
+isAsianSession = time(timeframe.period, "2000-0400+1:1234567", "Asia/Tokyo")
+
+// Subtle background colors for different sessions
+bgcolor(isNYSession ? color.new(color.blue, 98) : na, title="NY Session")
+bgcolor(isLondonSession and not isNYSession ? color.new(color.orange, 98) : na, title="London Session")
+bgcolor(isAsianSession and not isLondonSession and not isNYSession ? color.new(color.yellow, 98) : na, title="Asian Session")
